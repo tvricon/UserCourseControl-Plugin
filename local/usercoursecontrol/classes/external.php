@@ -382,4 +382,151 @@ class external extends external_api {
             'new_status' => new external_value(PARAM_INT, 'New enrolment status (0 active) or unchanged', VALUE_DEFAULT, null),
         ]);
     }
+
+    /**
+     * Parameters for get_user_courses_filtered.
+     * @return external_function_parameters
+     */
+    public static function get_user_courses_filtered_parameters(): external_function_parameters {
+        return new external_function_parameters([
+            'username' => new external_value(PARAM_USERNAME, 'Target user username', VALUE_REQUIRED),
+            'coursefullnamefilter' => new external_value(PARAM_TEXT, 'Comma or newline separated partial course fullname matches (uses LIKE)', VALUE_DEFAULT, ''),
+            'courseshortnamefilter' => new external_value(PARAM_TEXT, 'Comma or newline separated exact course shortname matches', VALUE_DEFAULT, ''),
+        ]);
+    }
+
+    /**
+     * Get user's enrolled courses with optional filtering at database level.
+     * 
+     * Filters courses by fullname (partial match) and/or shortname (exact match).
+     * Returns only courses where the user is enrolled (active or suspended).
+     * 
+     * @param string $username Target user's username
+     * @param string $coursefullnamefilter Comma/newline separated partial fullname filters
+     * @param string $courseshortnamefilter Comma/newline separated exact shortname filters
+     * @return array Array of course enrollment records
+     */
+    public static function get_user_courses_filtered(string $username, string $coursefullnamefilter = '', string $courseshortnamefilter = ''): array {
+        global $DB;
+
+        $params = self::validate_parameters(self::get_user_courses_filtered_parameters(), [
+            'username' => $username,
+            'coursefullnamefilter' => $coursefullnamefilter,
+            'courseshortnamefilter' => $courseshortnamefilter,
+        ]);
+
+        $username = $params['username'];
+        $fullnamefilter = trim($params['coursefullnamefilter']);
+        $shortnamefilter = trim($params['courseshortnamefilter']);
+
+        // Validate context and capabilities.
+        $syscontext = context_system::instance();
+        self::validate_context($syscontext);
+        require_capability('moodle/user:viewdetails', $syscontext);
+
+        // Get target user.
+        $targetuser = $DB->get_record('user', ['username' => $username, 'deleted' => 0], '*', MUST_EXIST);
+
+        // Base SQL query joining user enrollments with courses.
+        $sql = "SELECT c.id AS courseid, 
+                       c.fullname, 
+                       c.shortname, 
+                       c.category,
+                       c.startdate,
+                       c.enddate,
+                       ue.status AS enrolmentstatus,
+                       ue.timecreated AS enrolmenttimecreated,
+                       ue.timemodified AS enrolmenttimemodified,
+                       e.enrol AS enrolmethod
+                  FROM {user_enrolments} ue
+                  JOIN {enrol} e ON e.id = ue.enrolid
+                  JOIN {course} c ON c.id = e.courseid
+                 WHERE ue.userid = :userid
+                   AND e.status = :enrolactive";
+
+        $sqlparams = [
+            'userid' => $targetuser->id,
+            'enrolactive' => 0,
+        ];
+
+        // Build WHERE clause for course filters.
+        $whereclauses = [];
+
+        // Process fullname filters (partial match using LIKE).
+        if (!empty($fullnamefilter)) {
+            $fullnames = preg_split('/[\r\n,]+/', $fullnamefilter, -1, PREG_SPLIT_NO_EMPTY);
+            $fullnames = array_map('trim', $fullnames);
+            $fullnames = array_filter($fullnames);
+
+            if (!empty($fullnames)) {
+                $fullnameconditions = [];
+                foreach ($fullnames as $idx => $name) {
+                    $paramname = 'fullname' . $idx;
+                    $fullnameconditions[] = $DB->sql_like('c.fullname', ':' . $paramname, false);
+                    $sqlparams[$paramname] = '%' . $DB->sql_like_escape($name) . '%';
+                }
+                $whereclauses[] = '(' . implode(' OR ', $fullnameconditions) . ')';
+            }
+        }
+
+        // Process shortname filters (exact match).
+        if (!empty($shortnamefilter)) {
+            $shortnames = preg_split('/[\r\n,]+/', $shortnamefilter, -1, PREG_SPLIT_NO_EMPTY);
+            $shortnames = array_map('trim', $shortnames);
+            $shortnames = array_filter($shortnames);
+
+            if (!empty($shortnames)) {
+                list($insql, $inparams) = $DB->get_in_or_equal($shortnames, SQL_PARAMS_NAMED, 'shortname');
+                $whereclauses[] = "c.shortname $insql";
+                $sqlparams = array_merge($sqlparams, $inparams);
+            }
+        }
+
+        // Append filter conditions to SQL.
+        if (!empty($whereclauses)) {
+            $sql .= ' AND ' . implode(' AND ', $whereclauses);
+        }
+
+        $sql .= " ORDER BY c.fullname ASC";
+
+        // Execute query.
+        $records = $DB->get_records_sql($sql, $sqlparams);
+
+        $result = [];
+        foreach ($records as $r) {
+            $result[] = [
+                'courseid' => (int)$r->courseid,
+                'fullname' => (string)$r->fullname,
+                'shortname' => (string)$r->shortname,
+                'category' => (int)$r->category,
+                'startdate' => (int)$r->startdate,
+                'enddate' => (int)$r->enddate,
+                'enrolmentstatus' => (int)$r->enrolmentstatus,
+                'enrolmenttimecreated' => (int)$r->enrolmenttimecreated,
+                'enrolmenttimemodified' => (int)$r->enrolmenttimemodified,
+                'enrolmethod' => (string)$r->enrolmethod,
+            ];
+        }
+
+        return $result;
+    }
+
+    /**
+     * Return structure for get_user_courses_filtered.
+     * @return external_multiple_structure
+     */
+    public static function get_user_courses_filtered_returns(): external_multiple_structure {
+        return new external_multiple_structure(new external_single_structure([
+            'courseid' => new external_value(PARAM_INT, 'Course ID'),
+            'fullname' => new external_value(PARAM_TEXT, 'Course full name'),
+            'shortname' => new external_value(PARAM_TEXT, 'Course short name'),
+            'category' => new external_value(PARAM_INT, 'Course category ID'),
+            'startdate' => new external_value(PARAM_INT, 'Course start date timestamp'),
+            'enddate' => new external_value(PARAM_INT, 'Course end date timestamp'),
+            'enrolmentstatus' => new external_value(PARAM_INT, 'Enrollment status (0=active, 1=suspended)'),
+            'enrolmenttimecreated' => new external_value(PARAM_INT, 'Enrollment creation timestamp'),
+            'enrolmenttimemodified' => new external_value(PARAM_INT, 'Enrollment modification timestamp'),
+            'enrolmethod' => new external_value(PARAM_TEXT, 'Enrollment method (manual, self, etc.)'),
+        ]));
+    }
 }

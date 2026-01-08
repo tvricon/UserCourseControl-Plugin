@@ -23,6 +23,13 @@ $functions = [
         'type'        => 'write',
         'ajax'        => false,
     ],
+    'local_usercoursecontrol_get_user_courses_filtered' => [
+        'classname'   => 'local_usercoursecontrol\\external',
+        'methodname'  => 'get_user_courses_filtered',
+        'description' => 'Get user enrolled courses with database-level filtering by course fullname and/or shortname.',
+        'type'        => 'read',
+        'ajax'        => false,
+    ],
 ];
 
 $services = [
@@ -36,6 +43,7 @@ $services = [
             'local_usercoursecontrol_get_grade_status',
             'local_usercoursecontrol_list_suspended_courses',
             'local_usercoursecontrol_unsuspend_user',
+            'local_usercoursecontrol_get_user_courses_filtered',
         ],
     ],
 ];

@@ -5,12 +5,13 @@ Lightweight Moodle local plugin exposing custom Web Service APIs for:
 - Grade modification history for all course grade items (assignments, quizzes, etc.)
 - Listing suspended course enrolments for a user
 - Reinstate (unsuspend) a user in a course via enrol plugin API
+- Get user's enrolled courses with database-level filtering by course name
 
 No core changes. Uses only supported Moodle APIs and tables.
 
 ## 1. Plugin Overview
 
-- Purpose: Provide REST/JSON Web Service endpoints for external systems to query individual grade items (assignments, quizzes, etc.) with modification history, list courses where the user is suspended, and unsuspend a user without re-enrolling.
+- Purpose: Provide REST/JSON Web Service endpoints for external systems to query individual grade items (assignments, quizzes, etc.) with modification history, list courses where the user is suspended, unsuspend a user without re-enrolling, and efficiently fetch filtered course enrollments.
 - Non-invasive: No schema changes, observers, events, cron, UI pages, or settings.
 - Data sources: grade_grades, grade_grades_history, grade_items, enrol, user_enrolments, course.
 - Security: Strict parameter validation, capability checks, and exceptions for invalid states.
@@ -44,6 +45,36 @@ What it does not do:
    /usr/bin/php admin/cli/purge_caches.php
    ```
 
+### Updating the plugin (important)
+
+When updating plugin files on an existing installation:
+
+1. **Bump the version number** in `version.php`:
+
+   - Change `$plugin->version` to a higher value (e.g., `2026010800` for January 8, 2026)
+   - Update `$plugin->release` accordingly (e.g., `1.1.0` → `1.2.0`)
+
+2. **Upload the updated files**:
+
+   - `classes/external.php` (if modified)
+   - `db/services.php` (if modified)
+   - `version.php` (always update when adding/changing functions)
+
+3. **Trigger Moodle upgrade**:
+
+   - Visit: `https://yourmoodle.example/admin/index.php`
+   - Click "Upgrade Moodle database now"
+
+4. **Clear PHP opcode cache** (if available):
+
+   - Via cPanel: PHP OpCode Cache → Flush/Reset
+   - Or restart web server (Apache/Nginx)
+
+5. **Purge all caches**:
+   - Site administration → Development → Purge all caches
+
+**Important**: Simply replacing files without bumping the version will not work due to PHP opcode caching. Moodle needs to detect a version change to properly reload the new web service definitions.
+
 ## 3. Web Service Setup
 
 1. Enable Web services: Site administration → Advanced features → Enable web services.
@@ -56,6 +87,7 @@ What it does not do:
    - `local_usercoursecontrol_get_grade_status`
    - `local_usercoursecontrol_list_suspended_courses`
    - `local_usercoursecontrol_unsuspend_user`
+   - `local_usercoursecontrol_get_user_courses_filtered`
 5. Create a token for a user who has the required capabilities:
    - Site administration → Plugins → Web services → Manage tokens → Add.
 
@@ -66,6 +98,7 @@ Required capabilities (assign via appropriate role to the token-holding user):
   - If querying own grades: `moodle/grade:view` in the course context.
 - For listing suspended courses: `moodle/user:viewdetails` (suggested at system level).
 - For unsuspending users: `enrol/<plugin>:manage` (e.g. `enrol/manual:manage`) in the target course.
+- For filtered course list: `moodle/user:viewdetails` (suggested at system level).
 
 ## 4. API Usage Examples
 
@@ -230,12 +263,89 @@ Error case (not enrolled):
 }
 ```
 
+### 4.4 Get user's enrolled courses with filtering
+
+Function: `local_usercoursecontrol_get_user_courses_filtered`
+
+Params:
+
+- `username`: target user's username (required)
+- `coursefullnamefilter`: comma or newline separated partial course fullname matches (optional)
+- `courseshortnamefilter`: comma or newline separated exact course shortname matches (optional)
+
+Example request (all courses):
+
+```
+GET /webservice/rest/server.php?wstoken=XXXX&moodlewsrestformat=json&wsfunction=local_usercoursecontrol_get_user_courses_filtered&username=jdoe
+```
+
+Example request (filter by fullname):
+
+```
+GET /webservice/rest/server.php?wstoken=XXXX&moodlewsrestformat=json&wsfunction=local_usercoursecontrol_get_user_courses_filtered&username=jdoe&coursefullnamefilter=Mathematics,Introduction
+```
+
+Example request (filter by shortname):
+
+```
+GET /webservice/rest/server.php?wstoken=XXXX&moodlewsrestformat=json&wsfunction=local_usercoursecontrol_get_user_courses_filtered&username=jdoe&courseshortnamefilter=MATH101,CS202
+```
+
+Example request (combine both filters):
+
+```
+GET /webservice/rest/server.php?wstoken=XXXX&moodlewsrestformat=json&wsfunction=local_usercoursecontrol_get_user_courses_filtered&username=jdoe&coursefullnamefilter=Advanced&courseshortnamefilter=CS301
+```
+
+Example response:
+
+```json
+[
+  {
+    "courseid": 5,
+    "fullname": "Introduction to Mathematics",
+    "shortname": "MATH101",
+    "category": 2,
+    "startdate": 1693526400,
+    "enddate": 1704067200,
+    "enrolmentstatus": 0,
+    "enrolmenttimecreated": 1693526500,
+    "enrolmenttimemodified": 1693526500,
+    "enrolmethod": "manual"
+  },
+  {
+    "courseid": 12,
+    "fullname": "Advanced Mathematics",
+    "shortname": "MATH201",
+    "category": 2,
+    "startdate": 1704067200,
+    "enddate": 1715616000,
+    "enrolmentstatus": 1,
+    "enrolmenttimecreated": 1704067300,
+    "enrolmenttimemodified": 1710000000,
+    "enrolmethod": "self"
+  }
+]
+```
+
+Notes:
+
+- **Database-level filtering**: SQL WHERE clauses are applied before fetching, reducing network traffic and improving performance.
+- **Fullname filtering**: Uses SQL LIKE for partial matches (case-insensitive). Multiple values are OR'd together.
+- **Shortname filtering**: Uses exact matches. Multiple values are OR'd together.
+- **Combined filters**: When both filters are provided, they are AND'd together (course must match fullname filter AND shortname filter).
+- **Multiple values**: Separate with commas or newlines: `MATH101,CS202` or `MATH101\nCS202`
+- **Enrollment status**: `0` = active, `1` = suspended.
+- **Returns only enrolled courses**: User must have an active enrollment record (includes both active and suspended enrollments).
+- **Sorted by fullname**: Results are ordered alphabetically by course fullname.
+
 ## 5. Security Notes
 
 - Capability-checked endpoints:
   - Grades: `moodle/grade:viewall` (others) or `moodle/grade:view` (self) in course context.
   - Suspended courses list: `moodle/user:viewdetails` at system context.
   - Unsuspend: `enrol/<plugin>:manage` in the course.
+  - Filtered course list: `moodle/user:viewdetails` at system context.
 - Recommended: Create a dedicated service role with only the minimum required capabilities and assign via token.
 - All parameters are validated via `external_api` parameter definitions.
 
