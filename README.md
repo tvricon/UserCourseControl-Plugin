@@ -1,4 +1,8 @@
-# local_usercoursecontrol
+# UserCourseControl Moodle Plugin
+
+**Plugin Name:** local_usercoursecontrol  
+**Version:** 1.3.0  
+**Moodle Installation Path:** `[moodleroot]/local/usercoursecontrol/`
 
 Lightweight Moodle local plugin exposing custom Web Service APIs for:
 
@@ -28,22 +32,48 @@ What it does not do:
 
 ## 2. Installation
 
-### ZIP upload
+### Method 1: ZIP Upload
 
-1. Create a ZIP of the `local/usercoursecontrol` directory so that the ZIP contains the `usercoursecontrol` folder inside `local/`.
-2. In Moodle, go to: Site administration → Plugins → Install plugins.
-3. Upload the ZIP and follow the on-screen installer.
-4. Complete the upgrade.
-5. Purge caches: Site administration → Development → Purge all caches.
+1. Download this repository as a ZIP file (or clone and create a ZIP).
+2. **Important:** Ensure the ZIP structure is correct:
+   ```
+   usercoursecontrol/
+   ├── classes/
+   ├── db/
+   ├── lang/
+   ├── version.php
+   └── README.md
+   ```
+3. In Moodle, go to: Site administration → Plugins → Install plugins.
+4. Upload the ZIP and follow the on-screen installer.
+5. Complete the upgrade.
+6. Purge caches: Site administration → Development → Purge all caches.
 
-### CLI installation (optional)
+### Method 2: Manual Installation (Git Clone)
 
-1. Copy the `local/usercoursecontrol` directory into `[moodleroot]/local/`.
-2. Run the Moodle CLI upgrade:
+1. Navigate to your Moodle installation directory:
+   ```bash
+   cd [moodleroot]/local/
+   ```
+2. Clone this repository:
+   ```bash
+   git clone https://github.com/tvricon/UserCourseControl-Plugin.git usercoursecontrol
+   ```
+3. Run the Moodle CLI upgrade:
    ```bash
    /usr/bin/php admin/cli/upgrade.php --non-interactive --allow-unstable
    ```
-3. Purge caches:
+4. Purge caches:
+   ```bash
+   /usr/bin/php admin/cli/purge_caches.php
+   ```
+
+### Method 3: Direct File Copy
+
+1. Download/clone this repository to your local machine.
+2. Copy all files to `[moodleroot]/local/usercoursecontrol/` on your Moodle server.
+3. Visit: `https://yourmoodle.example/admin/index.php` to trigger the upgrade.
+4. Purge caches: Site administration → Development → Purge all caches.
    ```bash
    /usr/bin/php admin/cli/purge_caches.php
    ```
