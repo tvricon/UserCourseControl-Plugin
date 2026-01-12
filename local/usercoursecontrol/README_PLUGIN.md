@@ -6,14 +6,16 @@ Lightweight Moodle local plugin exposing custom Web Service APIs for:
 - Listing suspended course enrolments for a user
 - Reinstate (unsuspend) a user in a course via enrol plugin API
 - Get user's enrolled courses with database-level filtering by course name
+- Turnitin Direct V2 assignment management (get assignments, toggle late submissions)
+- Standard Moodle assignment control (get assignments, set cutoff dates to restrict submissions)
 
 No core changes. Uses only supported Moodle APIs and tables.
 
 ## 1. Plugin Overview
 
-- Purpose: Provide REST/JSON Web Service endpoints for external systems to query individual grade items (assignments, quizzes, etc.) with modification history, list courses where the user is suspended, unsuspend a user without re-enrolling, and efficiently fetch filtered course enrollments.
+- Purpose: Provide REST/JSON Web Service endpoints for external systems to query individual grade items (assignments, quizzes, etc.) with modification history, list courses where the user is suspended, unsuspend a user without re-enrolling, efficiently fetch filtered course enrollments, manage Turnitin assignments, and control student submission access to standard Moodle assignments.
 - Non-invasive: No schema changes, observers, events, cron, UI pages, or settings.
-- Data sources: grade_grades, grade_grades_history, grade_items, enrol, user_enrolments, course.
+- Data sources: grade_grades, grade_grades_history, grade_items, enrol, user_enrolments, course, turnitintooltwo, turnitintooltwo_parts, assign, course_modules.
 - Security: Strict parameter validation, capability checks, and exceptions for invalid states.
 - Filters out deleted/hidden grade items and deleted activity modules automatically.
 
@@ -22,6 +24,7 @@ What it does not do:
 - Does not modify grades.
 - Does not alter enrolments except when explicitly unsuspending via API and capability-checked.
 - Does not write directly to DB tables; uses enrol plugin API for updates.
+- Does not delete or hide assignments; only controls submission access via cutoff dates.
 
 ## 2. Installation
 
@@ -88,6 +91,12 @@ When updating plugin files on an existing installation:
    - `local_usercoursecontrol_list_suspended_courses`
    - `local_usercoursecontrol_unsuspend_user`
    - `local_usercoursecontrol_get_user_courses_filtered`
+   - `local_usercoursecontrol_get_turnitin_assignments`
+   - `local_usercoursecontrol_toggle_turnitin_allowlate`
+   - `local_usercoursecontrol_bulk_toggle_turnitin_allowlate`
+   - `local_usercoursecontrol_get_assignments`
+   - `local_usercoursecontrol_set_assignment_cutoff`
+   - `local_usercoursecontrol_bulk_set_assignment_cutoff`
 5. Create a token for a user who has the required capabilities:
    - Site administration → Plugins → Web services → Manage tokens → Add.
 
@@ -99,6 +108,12 @@ Required capabilities (assign via appropriate role to the token-holding user):
 - For listing suspended courses: `moodle/user:viewdetails` (suggested at system level).
 - For unsuspending users: `enrol/<plugin>:manage` (e.g. `enrol/manual:manage`) in the target course.
 - For filtered course list: `moodle/user:viewdetails` (suggested at system level).
+- For Turnitin functions:
+  - Getting assignments: `moodle/course:view` at system level.
+  - Toggling allowlate: `moodle/course:manageactivities` in the course context.
+- For standard assignment functions:
+  - Getting assignments: `moodle/course:view` at system level.
+  - Setting cutoff dates: `moodle/course:manageactivities` in the course context.
 
 ## 4. API Usage Examples
 
@@ -339,6 +354,280 @@ Notes:
 - **Returns only enrolled courses**: User must have an active enrollment record (includes both active and suspended enrollments).
 - **Sorted by fullname**: Results are ordered alphabetically by course fullname.
 
+### 4.5 Get Turnitin assignments by course and due date
+
+Function: `local_usercoursecontrol_get_turnitin_assignments`
+
+Params:
+
+- `coursenames`: array of course names for exact shortname or partial fullname match (required)
+- `duedatestart`: start of due date range in Unix timestamp (required)
+- `duedateend`: end of due date range in Unix timestamp (required)
+
+Example request:
+
+```
+GET /webservice/rest/server.php?wstoken=XXXX&moodlewsrestformat=json&wsfunction=local_usercoursecontrol_get_turnitin_assignments&coursenames[0]=MATH101&coursenames[1]=Biology&duedatestart=1704067200&duedateend=1704153600
+```
+
+Example response:
+
+```json
+[
+  {
+    "partId": 45,
+    "assignmentId": 12,
+    "assignmentName": "Research Paper",
+    "partName": "Part 1",
+    "tiiAssignId": 987654,
+    "courseId": 5,
+    "courseShortname": "MATH101",
+    "courseFullname": "Introduction to Mathematics",
+    "dueDate": 1704067200,
+    "dueDateFormatted": "01-01-2024",
+    "allowLate": true,
+    "reportGenSpeed": 1
+  },
+  {
+    "partId": 46,
+    "assignmentId": 13,
+    "assignmentName": "Lab Report",
+    "partName": "Submission",
+    "tiiAssignId": 987655,
+    "courseId": 8,
+    "courseShortname": "BIO101",
+    "courseFullname": "Introduction to Biology",
+    "dueDate": 1704153600,
+    "dueDateFormatted": "02-01-2024",
+    "allowLate": false,
+    "reportGenSpeed": 2
+  }
+]
+```
+
+Notes:
+
+- Searches by **exact shortname match OR partial fullname match** (case-insensitive).
+- Returns all Turnitin assignment parts matching the course and due date criteria.
+- Field names use **camelCase** for API consistency.
+- `allowLate`: `true` means students can submit after due date, `false` means they cannot.
+- Ordered by due date, then course fullname, then assignment name.
+
+### 4.6 Toggle late submissions for a Turnitin assignment part
+
+Function: `local_usercoursecontrol_toggle_turnitin_allowlate`
+
+Params:
+
+- `partid`: Turnitin part ID (required)
+- `allowlate`: boolean - true to allow late submissions, false to block (required)
+
+Example request:
+
+```
+POST /webservice/rest/server.php
+  wstoken=XXXX
+  moodlewsrestformat=json
+  wsfunction=local_usercoursecontrol_toggle_turnitin_allowlate
+  partid=45
+  allowlate=0
+```
+
+Example response:
+
+```json
+{
+  "success": true,
+  "partid": 45,
+  "allowlate": false
+}
+```
+
+Notes:
+
+- Requires `moodle/course:manageactivities` capability in the course context.
+- Updates the `allowlate` field in `mdl_turnitintooltwo_parts` table.
+- Use `allowlate=0` or `false` to prevent late submissions.
+- Use `allowlate=1` or `true` to allow late submissions.
+
+### 4.7 Bulk toggle late submissions for multiple Turnitin parts
+
+Function: `local_usercoursecontrol_bulk_toggle_turnitin_allowlate`
+
+Params:
+
+- `partids`: array of Turnitin part IDs (required)
+- `allowlate`: boolean - true to allow late submissions, false to block (required)
+
+Example request:
+
+```
+POST /webservice/rest/server.php
+  wstoken=XXXX
+  moodlewsrestformat=json
+  wsfunction=local_usercoursecontrol_bulk_toggle_turnitin_allowlate
+  partids[0]=45
+  partids[1]=46
+  partids[2]=47
+  allowlate=0
+```
+
+Example response:
+
+```json
+{
+  "success": 3,
+  "failed": 0,
+  "total": 3
+}
+```
+
+Notes:
+
+- Processes multiple parts in one request.
+- Returns counts: `success` (updated successfully), `failed` (capability issues or not found), `total` (processed).
+- Continues processing even if some parts fail.
+- Each part requires `moodle/course:manageactivities` in its respective course.
+
+### 4.8 Get standard Moodle assignments by course and due date
+
+Function: `local_usercoursecontrol_get_assignments`
+
+Params:
+
+- `coursenames`: array of course names for exact shortname or partial fullname match (required)
+- `duedatestart`: start of due date range in Unix timestamp (required)
+- `duedateend`: end of due date range in Unix timestamp (required)
+
+Example request:
+
+```
+GET /webservice/rest/server.php?wstoken=XXXX&moodlewsrestformat=json&wsfunction=local_usercoursecontrol_get_assignments&coursenames[0]=CS202&coursenames[1]=Advanced&duedatestart=1704067200&duedateend=1704153600
+```
+
+Example response:
+
+```json
+[
+  {
+    "assignmentId": 34,
+    "assignmentName": "Programming Assignment 3",
+    "courseId": 12,
+    "courseShortname": "CS202",
+    "courseFullname": "Advanced Programming",
+    "cmId": 156,
+    "visible": true,
+    "dueDate": 1704067200,
+    "dueDateFormatted": "01-01-2024",
+    "cutoffDate": 1704153600,
+    "cutoffDateFormatted": "02-01-2024",
+    "allowSubmissionsFromDate": 1703462400,
+    "allowSubmissionsFromDateFormatted": "25-12-2023",
+    "gradeMax": 100.0,
+    "submissionsOpen": false
+  }
+]
+```
+
+Notes:
+
+- Searches by **exact shortname match OR partial fullname match** (case-insensitive).
+- Returns standard Moodle assignments (not Turnitin).
+- `submissionsOpen`: Calculated field showing if students can currently submit based on cutoff date and allowSubmissionsFromDate.
+- `cutoffDate`: If set and passed, students cannot submit (but can still view the assignment).
+- `visible`: Assignment visibility status.
+- `cmId`: Course module ID for the assignment.
+- Ordered by due date, then course fullname, then assignment name.
+
+### 4.9 Set cutoff date for a standard Moodle assignment
+
+Function: `local_usercoursecontrol_set_assignment_cutoff`
+
+Params:
+
+- `assignmentid`: Assignment ID (required)
+- `cutoffdate`: Unix timestamp for cutoff date, or 0 to remove cutoff (required)
+
+Example request (set cutoff):
+
+```
+POST /webservice/rest/server.php
+  wstoken=XXXX
+  moodlewsrestformat=json
+  wsfunction=local_usercoursecontrol_set_assignment_cutoff
+  assignmentid=34
+  cutoffdate=1704067200
+```
+
+Example request (remove cutoff):
+
+```
+POST /webservice/rest/server.php
+  wstoken=XXXX
+  moodlewsrestformat=json
+  wsfunction=local_usercoursecontrol_set_assignment_cutoff
+  assignmentid=34
+  cutoffdate=0
+```
+
+Example response:
+
+```json
+{
+  "success": true,
+  "assignmentid": 34,
+  "cutoffdate": 1704067200
+}
+```
+
+Notes:
+
+- **After cutoff date**: Students can VIEW the assignment and see the due date, but CANNOT submit.
+- **Teachers**: Always have full access regardless of cutoff date.
+- Students are not confused - they can see why they can't submit (deadline passed).
+- Set `cutoffdate=0` to remove the cutoff and allow submissions again.
+- Requires `moodle/course:manageactivities` capability in the course context.
+
+### 4.10 Bulk set cutoff date for multiple assignments
+
+Function: `local_usercoursecontrol_bulk_set_assignment_cutoff`
+
+Params:
+
+- `assignmentids`: array of assignment IDs (required)
+- `cutoffdate`: Unix timestamp for cutoff date, or 0 to remove cutoff (required)
+
+Example request:
+
+```
+POST /webservice/rest/server.php
+  wstoken=XXXX
+  moodlewsrestformat=json
+  wsfunction=local_usercoursecontrol_bulk_set_assignment_cutoff
+  assignmentids[0]=34
+  assignmentids[1]=35
+  assignmentids[2]=36
+  cutoffdate=1704067200
+```
+
+Example response:
+
+```json
+{
+  "success": 3,
+  "failed": 0,
+  "total": 3
+}
+```
+
+Notes:
+
+- Processes multiple assignments in one request.
+- Returns counts: `success` (updated successfully), `failed` (capability issues or not found), `total` (processed).
+- Continues processing even if some assignments fail.
+- Each assignment requires `moodle/course:manageactivities` in its respective course.
+- Useful for bulk-disabling submissions across many assignments at once.
+
 ## 5. Security Notes
 
 - Capability-checked endpoints:
@@ -346,19 +635,27 @@ Notes:
   - Suspended courses list: `moodle/user:viewdetails` at system context.
   - Unsuspend: `enrol/<plugin>:manage` in the course.
   - Filtered course list: `moodle/user:viewdetails` at system context.
+  - Turnitin get: `moodle/course:view` at system context.
+  - Turnitin toggle: `moodle/course:manageactivities` in course context (per-assignment).
+  - Assignment get: `moodle/course:view` at system context.
+  - Assignment cutoff: `moodle/course:manageactivities` in course context (per-assignment).
 - Recommended: Create a dedicated service role with only the minimum required capabilities and assign via token.
 - All parameters are validated via `external_api` parameter definitions.
+- Bulk operations check capabilities per-item and skip items where user lacks permission.
 
 ## 6. Compatibility Notes
 
 - Supported Moodle versions: 3.9 (LTS) and later.
 - No DB schema changes or observers; upgrades should be low risk.
-- Uses only supported tables and stable APIs (enrol, grades).
+- Uses only supported tables and stable APIs (enrol, grades, assign, turnitintooltwo).
+- Turnitin functions require Turnitin Direct V2 plugin to be installed.
 
 ## 7. Non-Functional
 
 - Efficient queries using indexed joins; minimal data returned.
 - No cron, no UI, no admin settings.
+- Bulk operations process items individually with error handling.
+- Date filtering uses database-level WHERE clauses for performance.
 
 ## 8. Development
 
